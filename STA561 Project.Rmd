@@ -1,0 +1,421 @@
+---
+title: "Charging fees on Uber of Lyft rides in the City of Chicago"
+author: "Ziang Wang, Tao Ni, Alicia Zhou"
+date: "April, 2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F, warning=F)
+library(tidyverse)
+library(knitr)
+library(gridExtra)
+library(readxl)
+library(stringr)
+library(grid)
+library(BAS)
+```
+## Background Introduction
+
+#### Content of the analysis
+
+With the popularity of Uber and Lyfts that could help people save money and make transportation more convenient, the normal taxi industry and the parking fees collected by the government would be definitely affected, especially in big cities. In this project, we chose Chicago as the city to research, and we used the dataset containing 5000 records of ride from November to December in 2018 in Chicago from the government to analyze on the reasonable charge amount on rides going downtown in the City of Chicago that could be collected by the government and invested either in the taxi industry or as a compensation for the government's revenue. 
+
+We would mainly focused on rides dropping off in community area 8, 32, 33, 35, 38, 39, which are central community areas of Chicago. We would try to figure out a reasonable amount by looking at the relationship of fare, tip, and additional charges of each ride, together with information such as if the ride is pooled or shared. Since the situation might be different with different areas or different dates, we also provide analysis based on different regions and holiday(Chrismas) to see if there's a need to charge a different amount on those areas or on those dates. 
+
+We would generate the final suggestions by making related plots and tables, doing statistical tests, and conducting regression analysis.
+
+#### Variables of the dataset
+
+* `Trip ID`: ID of a ride record
+* `Day`: Date of the ride, ranging from 11/01/2018 to 12/31/2018
+* `Trip seconds`: Time using for a ride
+* `Trip Miles`: Distance travelling for a ride
+* `Pickup Community Area`: Community area where passenger is picked up
+* `Dropff.Community.Area`: Community area where passenger is dropped off
+* `Fare`: Fare amount of the ride
+* `Tip`: Tip amount to the driver
+* `Additional Charges`: Additional charges to this ride
+* `Trip Total`: Total cost of this ride
+* `Shared Trip Authorized`: If the trip is shared 
+* `Trips Pooled`: How many passengers are picked up during the pooled trip. If the number is 1, then it's not a pooled trip. 
+
+```{r dataImport, echo = F}
+# Import the data
+dat<-read_excel("ChicagoSample_3.xlsx", skip=4)
+dat<-as_tibble(dat)
+names(dat) <- make.names(names(dat))
+
+# Change some variables to factors, and make character "NA" as NA
+dat$Day<-as.Date(dat$Day)
+dat$Pickup.Community.Area<-as.factor(dat$Pickup.Community.Area)
+dat$Dropoff.Community.Area<-as.factor(dat$Dropoff.Community.Area)
+dat$Trips.Pooled<-as.factor(dat$Trips.Pooled)
+dat$Shared.Trip.Authorized<-as.factor(dat$Shared.Trip.Authorized)
+dat$Trips.Pooled<-as.factor(dat$Trips.Pooled)
+
+dat$Pickup.Community.Area[dat$Pickup.Community.Area=="NA"]<-NA
+dat$Dropoff.Community.Area[dat$Dropoff.Community.Area=="NA"]<-NA
+dat$Trips.Pooled[dat$Trips.Pooled=="NA"]<-NA
+
+# Combine factors 
+dat<-mutate(dat, Shared.Trip.Authorized=fct_collapse(dat$Shared.Trip.Authorized,
+                                       Yes=c("Yes","TRUE","Authorized","Authrized"),
+                                       No=c("No","FALSE","Unauthorized")))
+dat$Shared.Trip.Authorized[dat$Shared.Trip.Authorized=="NA"]<-NA
+
+
+#Split the data
+set.seed(03281997)
+dat$dataset<-sample(x=c("training", "query","test"),
+                         size=nrow(dat), 
+                         prob=c(0.6,0.2,0.2), 
+                         replace=T)
+dat.train<-filter(dat, dataset=="training")
+dat.query<-filter(dat, dataset=="query")
+dat.test<-filter(dat, dataset=="test")
+```
+
+We made several variables as factors, as values of these variables should be discrete, and numeric values won't make sense. We also make the character "NA" of some variables as missing values for further analysis. In addition, we releveled factor `Shared Trip Authorized` to simplify it as "Yes"" or "No". We divided the dataset into three parts: training, query and test. Training set is mainly for EDA purpose. We used query part to build some models and see results. We used the test part to finalize our models and get the results. 
+
+\newpage
+
+## Exploratory Data Analysis
+
+#### Univariate plots
+
+Since we concentrate on rides going downtown, we filter `Dropoff.Community.Area` such that it includes 8, 32, 33, 35, 38, 39, which are the central region and part of south region representing the downtown area. By filtering specific community areas, we could eliminate unuseful information and focus on rides we're interested in. For variables `Tip`,`Trip.Total` and `Trip.Miles`, we observed that most tip amounts are in between 0 and 6; most trip total costs are in between 0 and 50; most distances of trip are in between 0 and 30. We filtered these variables to make plots look better and more informative. 
+
+```{r EDA Univariate, fig.height=6, echo = F}
+
+#Univariate
+dat.train.uni<-dat.train[, c(3,4,6,7,8,9,10,11,12)]
+dat.train.uni<-dat.train.uni[!is.na(dat.train.uni$Shared.Trip.Authorized),]
+dat.train.uni<-dat.train.uni[!is.na(dat.train.uni$Trips.Pooled),]
+dat.train.uni<-dat.train.uni %>%
+  filter(Dropoff.Community.Area=="8" | Dropoff.Community.Area=="32"|Dropoff.Community.Area=="33"|
+         Dropoff.Community.Area=="35"| Dropoff.Community.Area=="38"|Dropoff.Community.Area=="39") %>%
+  filter(Tip<6 & Tip>0) %>% filter(Fare<40 & Fare>0) %>% 
+  filter(Trip.Total<50 & Trip.Total>0) %>% 
+  filter(Trip.Miles<30, Trip.Miles>0)
+
+
+plotlist<-list()
+
+x.names<-names(dat.train.uni)
+ 
+for(x.name in x.names){
+  if(x.name=="dataset") next
+  if(is.numeric(dat.train.uni[[x.name]])){
+    plotlist[[x.name]]<-ggplot(dat.train.uni, aes_string(x.name))+geom_histogram()
+  } else {
+    plotlist[[x.name]]<-ggplot(dat.train.uni, aes_string(x.name))+geom_bar()
+  }
+}
+
+marrangeGrob(plotlist, ncol=2, nrow=5, top="Univariate Graphics")
+```
+
+#### Bivariate plots
+\
+Again, we chose to filter `Dropoff.Community.Area` since we're interested in rides going to the downtown area. 
+
+```{r EDA Bivariate, fig.height=11, fig.width=8, echo = F}
+dat.train.bi<-dat.train[, c(4,6,7,8,9,11)]
+dat.train.bi<-dat.train.bi[!is.na(dat.train.bi$Shared.Trip.Authorized),]
+
+dat.train.bi<-dat.train.bi %>%
+  filter(Dropoff.Community.Area=="8" |
+           Dropoff.Community.Area=="32"|Dropoff.Community.Area=="33"|
+           Dropoff.Community.Area=="35"|Dropoff.Community.Area=="38"|Dropoff.Community.Area=="39")
+
+plotlist2<-list()
+
+x.names<-names(dat.train.bi)
+
+for(y.name in x.names){
+  for(x.name in x.names){
+    if(x.name==y.name) next
+    else if(is.factor(dat.train.bi[[x.name]])==TRUE & is.factor(dat.train.bi[[y.name]])==TRUE){
+      plotlist2[[paste(x.name,y.name)]]<-ggplot(dat.train.bi, aes_string(x.name, fill=y.name))+
+        geom_bar()
+    } else if(is.factor(dat.train.bi[[x.name]])==TRUE & is.factor(dat.train.bi[[y.name]])==FALSE){
+      plotlist2[[paste(x.name,y.name)]]<-ggplot(dat.train.bi, aes_string(x.name, y.name))+
+        geom_boxplot()
+    } else if(is.factor(dat.train.bi[[x.name]])==FALSE & is.factor(dat.train.bi[[y.name]])==TRUE){
+      plotlist2[[paste(x.name,y.name)]]<-ggplot(dat.train.bi, aes_string(y.name, x.name))+
+        geom_boxplot()+coord_flip()
+    }
+    else{
+      plotlist2[[paste(x.name,y.name)]]<-ggplot(dat.train.bi, aes_string(x.name, y.name))+geom_point()
+    }
+  }
+}
+
+plots.per.page2=10
+for(i in seq(1,length(plotlist2),by=plots.per.page2)){
+  grid.arrange(grobs=plotlist2[i:(i+plots.per.page2-1)], nrow=plots.per.page2/2, ncol=2,
+               top=textGrob("Bivariate Graphics"))
+}
+```
+
+#### Tables
+```{r EDA Table, echo = F}
+dat.train.t<-dat.train.bi%>% 
+  group_by(Dropoff.Community.Area) %>%
+  summarize(Fare= mean(Fare),
+            Tip=mean(Tip),
+            Additional=mean(Additional.Charges))
+
+kable(dat.train.t, booktabs=T, digits=2, caption="Trip cost of ride to downtown community areas")
+
+dat.train.t2<-dat.train %>% 
+  filter(Dropoff.Community.Area=="8" | Dropoff.Community.Area=="32"|Dropoff.Community.Area=="33"|
+           Dropoff.Community.Area=="35"|Dropoff.Community.Area=="38"|Dropoff.Community.Area=="39") %>% 
+  filter(Day=="2018-12-24"|Day=="2018-12-25") %>%
+  group_by(Dropoff.Community.Area) %>%
+  summarize(Fare= mean(Fare),
+            Tip=mean(Tip),
+            Additional=mean(Additional.Charges)) 
+
+kable(dat.train.t2, booktabs=T, digits=2, 
+      caption="Trip cost of ride to downtown community areas on Chrismas")
+  
+```
+
+## Hypotheisis Generation
+
+### Observations from EDA
+From the EDA section, we could observe some patterns that worth further researching:
+
+* The common additional charges are around $2.5, and people who would like to pay a tip usually pay less than 6 dollars. We also observe there might exist linear relationship between trip miles and tip amount. Since additional charges and tip are part of the "extra" cost that could be related with the "extra" charge we research on, we could generate some tests and models on `tip`,`Additional Charge`, `Trip Mile`, etc..
+
+* We care more about the ride dropping off downtown, and we would like to charge on rides going downtown, indicating we should find out if rides going downtown have unique pattern that's different from the general trend. Thus, we will research on trip miles, trip seconds, pickup community areas with dropoff community areas. There could be significant differences for some community areas. 
+
+* It's observed that most rides going downtown would not authorize shared trips. There's a need to research if people would like to pay more if they don't authorize shared trips. In other words, we could charge more on unauthorized rides going downtown. 
+
+* The dataset includes information during Chrismas holidays. From the EDA table, we observe the fare is greater than the fare on other days, and people would like to go to specific downtown community areas. There's a need to research if there's new trend during Chrismas holiday.
+
+### Models and tests
+
+We used the query dataset to build some models according to the information we get from EDA.
+
+##### Case QQ: Trip.miles, Additional Charges, Tip, etc.
+
+```{r HG, eval = F}
+lm2<-lm(Trip.Miles~Tip+Additional.Charges, data=dat.query)
+summary(lm2)
+anova(lm2)
+
+lm3<-lm(Tip~Fare+Additional.Charges+Trip.Miles, data=dat.query)
+summary(lm3)
+```
+
+##### Case CQ/CC: downtown Area with other variables
+```{r, echo = F}
+dat.query.downtown<-dat.query %>%
+  mutate(downtown=ifelse(Dropoff.Community.Area=="8"|Dropoff.Community.Area=="32"|
+                           Dropoff.Community.Area=="33"|Dropoff.Community.Area=="35"|
+                           Dropoff.Community.Area=="38"|Dropoff.Community.Area=="39", 1,0))
+dat.query.downtown <-dat.query.downtown[!is.na(dat.query.downtown$downtown),]
+```
+
+```{r, eval = F}
+glm1<-glm(downtown~Trip.Miles+Tip+Additional.Charges+Shared.Trip.Authorized, dat.query.downtown, 
+          family=binomial(link="logit"))
+summary(glm1)
+
+glm2<-glm(downtown~Shared.Trip.Authorized, dat.query.downtown, family=binomial(link="logit"))
+summary(glm2)
+
+lm4<-lm(Tip~Shared.Trip.Authorized+downtown, dat.query.downtown)
+summary(lm4)
+
+lm5<-lm(Additional.Charges~Shared.Trip.Authorized+downtown, dat.query.downtown)
+summary(lm5)
+
+chisq.test(dat.query.downtown$downtown, dat.query.downtown$Trips.Pooled)
+
+glm3<-glm(downtown~Trips.Pooled, dat.query.downtown, family=binomial(link="logit"))
+summary(glm3)
+```
+
+##### Case CQ/CC: Specify specific community Area
+```{r, echo = F}
+dat.query.community<-dat.query %>%
+  filter(Dropoff.Community.Area=="8"|Dropoff.Community.Area=="32"|
+          Dropoff.Community.Area=="33"|Dropoff.Community.Area=="35"|
+          Dropoff.Community.Area=="38"|Dropoff.Community.Area=="39")
+
+HG1<-dat.query.community[!is.na(dat.query.community$Shared.Trip.Authorized) &
+                        !is.na(dat.query.community$ Pickup.Community.Area),] %>%
+  group_by(Shared.Trip.Authorized) %>%
+  ggplot(aes(fct_lump(Pickup.Community.Area, n=5), Trip.Miles))+
+  geom_boxplot(aes(fill=Shared.Trip.Authorized))+
+  facet_grid(.~Shared.Trip.Authorized)+
+  scale_x_discrete(name="Pickup Community Area")+ylim(0,10)+
+  theme(legend.position = "bottom")
+```
+
+```{r, eval = F}
+aov.test1<-aov(Tip~Dropoff.Community.Area, dat.query.community)
+summary(aov.test1)
+
+aov.test2<-aov(Additional.Charges~Dropoff.Community.Area, dat.query.community)
+summary(aov.test2)
+```
+
+```{r, echo = F}
+HG2<-dat.query.community[!is.na(dat.query.community$Shared.Trip.Authorized) &
+                        !is.na(dat.query.community$ Dropoff.Community.Area),] %>%
+  group_by(Shared.Trip.Authorized) %>%
+  ggplot(aes(Dropoff.Community.Area, Trip.Miles))+
+  geom_boxplot(aes(fill=Shared.Trip.Authorized))+
+  facet_grid(.~Shared.Trip.Authorized)+
+  scale_x_discrete(name="Dropoff Community Area")+ylim(2.5,10)+
+  theme(legend.position = "bottom")
+
+grid.arrange(HG1,HG2,ncol=2)
+```
+
+
+##### Case CQ/CC/QQ: Research on data during Chrismas Holiday
+```{r, echo = F}
+dat.query.chrismas<-dat.query %>% filter(Day=="2018-12-24"|Day=="2018-12-25")
+
+dat.query.chrismas.t1<-dat.query.chrismas%>% 
+  group_by(Shared.Trip.Authorized) %>%
+  summarize(Fare= mean(Fare),
+            Tip=mean(Tip),
+            Additional=mean(Additional.Charges)) 
+
+kable(dat.query.chrismas.t1, booktabs=T, digits=2, 
+      caption="Trip cost of ride to downtown community areas on Chrismas")
+```
+
+```{r, eval = F}
+lm6<-lm(Trip.Miles~Tip+Additional.Charges, data=dat.query.chrismas)
+summary(lm6)
+```
+
+### Analysis Plan
+
+After developing some models with statistical tests, the analysis plans are as follows:
+
+* Use linear regression to test the relationship between `Tip` & `Additional.Charges` and `Trip Miles`. We need to know whether people would like to pay more for additional cost when travelling further, and what could be a reasonable average charge.
+
+* Use logistic regression to test whether people authorizing shared trip are more likely to go downtown. We could apply price discrimination, and charge more on one group to earn more.
+
+* Use the plot to show whether there are significant differences for previous analysis in specific community areas. We could apply price discrimination, and charge more on rides starting from and going to specific community areas. 
+
+* Use the table to show the situation of `Fare`, `Tip`, `Additional Charges`, and `Shared trip` during Chrismas holiday. We might need to apply different policies on those days, and we might charge more. 
+
+
+## Hypothesis Confirmation Analysis
+
+In this project, we used the dataset containing 5000 records of ride from November to December in 2018 in Chicago from the government to analyze on the reasonable charge amount on rides going downtown in the City of Chicago. 
+Since we concentrate on rides going to downtown Chicago, I filter `Dropoff.Community.Area` such that it includes 8, 32, 33, 35, 38, 39, which are the central region and part of south region representing the downtown area.
+Our analysis mainly uses variables including `Day`, `Trip.Miles`, `Pickup.Community.Area`, `Dropoff.Community.Area`, `Tip`, `Additional.Charges`, `Shared.Trip.Authorized` to provide suggestions on average charge amount and additional charge with different situations, and we used the test dataset to fit models and analyze.
+
+#### Suggested average charge amount
+
+We used the linear regression to test the relationship between trip miles, tip amount, and additional charge amount to see how much additinal fee people would like to pay, indicating how much fee on base fare rate on rides that we should charge. 
+
+```{r echo=F}
+lm.hca1<-lm(Trip.Miles~Tip+Additional.Charges, data=dat.test)
+
+table1 <- round(data.frame(estimate = lm.hca1$coefficients,
+                    confint(lm.hca1), 
+                    summary(lm.hca1)$coefficients[,4]  
+                    ), digits = 4)
+colnames(table1) <- c("Estimate", "Lower bound", "Upper bound", "p-value")
+
+kable(table1, caption = "Regression Results of the suggested average charge amount", align = 'c') 
+
+dat.test %>% filter(Dropoff.Community.Area=="8"|Dropoff.Community.Area=="32"|
+                    Dropoff.Community.Area=="33"|Dropoff.Community.Area=="35"|
+                    Dropoff.Community.Area=="38"|Dropoff.Community.Area=="39") %>% summarize(mean(Trip.Miles)) %>% kable()
+```
+The linear regression indicaes if people pay one dollar of tip and one dollar for Additional.Charges, the trip miles would be 1.2925+0.2192+1.6801=3.19 miles. We find the average distance of rides going downtown is about 4.37. Thus, people would like to pay 2*4.37/3.19=2.74 dollars for additional cost on average. Since people still need to pay for tip and other costs after we charge the small fee, it's suggested that the charge amount range from 1.5 dollars to 2.0 dollars on average. 
+
+#### Additional charge on non-shared trips
+
+We categorized dropoff community areas of downtown as the downtown area and other areas. We used logistic regression to see if people who don't authorize shared trips are more likely to go to the downtown region.
+```{r echo=F}
+dat.test.downtown<-dat.test %>%
+  mutate(downtown=ifelse(Dropoff.Community.Area=="8"|Dropoff.Community.Area=="32"|
+                           Dropoff.Community.Area=="33"|Dropoff.Community.Area=="35"|
+                           Dropoff.Community.Area=="38"|Dropoff.Community.Area=="39", 1,0))
+dat.test.downtown <-dat.query.downtown[!is.na(dat.test.downtown$downtown),]
+glm.hca1<-glm(downtown~Shared.Trip.Authorized, dat.test.downtown, family=binomial(link="logit"))
+
+table2 <- round(data.frame(estimate = glm.hca1$coefficients,
+                    confint(glm.hca1), 
+                    summary(glm.hca1)$coefficients[,4]  
+                    ), digits = 4)
+colnames(table2) <- c("Estimate", "Lower bound", "Upper bound", "p-value")
+kable(table2, caption = "Regression Results for the Additional charge", align = 'c')
+```
+
+The logistic regression indicates if the passenger doesn't agree to share the trip with other people, then the odds of going downtown would be exp(0.5298)= 1.699 times the odds of going downtown when the passenger allows for shared trips. In other words, if the trip is not shared, passengers are more likely to be dropped in downtown. Thus, we could charge more (could be 3 dollars since people would like to pay around 3 dollars more) on non-shared trips to make more revenue.
+
+#### Additional charge on some community areas
+
+The situation might be different in some community areas. We used the plot to show if we could charge differently on rides starting in some areas or stopping in some ares.
+
+```{r echo=F, fig.height=4}
+dat.test.community<-dat.query %>%
+  filter(Dropoff.Community.Area=="8"|Dropoff.Community.Area=="32"|
+          Dropoff.Community.Area=="33"|Dropoff.Community.Area=="35"|
+          Dropoff.Community.Area=="38"|Dropoff.Community.Area=="39")
+
+HCA1<-dat.test.community[!is.na(dat.test.community$Shared.Trip.Authorized) & !is.na(dat.test.community$ Pickup.Community.Area),] %>%
+  group_by(Shared.Trip.Authorized) %>%
+  ggplot(aes(fct_lump(Pickup.Community.Area, n=5), Trip.Miles))+
+  geom_boxplot(aes(fill=Shared.Trip.Authorized))+
+  facet_grid(.~Shared.Trip.Authorized)+
+  scale_x_discrete(name="Pickup Community Area")+ylim(0,10)+
+  theme(legend.position = "bottom")
+
+HCA2<-dat.test.community[!is.na(dat.test.community$Shared.Trip.Authorized) & !is.na(dat.test.community$ Dropoff.Community.Area),] %>%
+  group_by(Shared.Trip.Authorized) %>%
+  ggplot(aes(Dropoff.Community.Area, Trip.Miles))+
+  geom_boxplot(aes(fill=Shared.Trip.Authorized))+
+  facet_grid(.~Shared.Trip.Authorized)+
+  scale_x_discrete(name="Dropoff Community Area")+ylim(2.5,10)+
+  theme(legend.position = "bottom")
+
+grid.arrange(HCA1,HCA2,ncol=2)
+```
+
+From the plot on the left, most rides start from the downtown area or areas not far from the downtown region, and there's no obvious difference if the trip is shared or not. For additional revenue, we could also charge a small fee (could be also 1.5 to 2.0 dollars) for rides starting in the downtown central area. 
+
+From the plot on the right, Community 32 and Community 33 are popular areas. It's not surprising since these two areas are central part of Chicago. Thus, we could charge more fees(could be also 3 dollars or even more) on rides dropped of in these two community areas.
+
+#### Different charge on Chrismas (12.24 and 12.25)
+
+We use the table to show if there's a difference of those variables from previous analysis on Chrismas. 
+
+```{r, echo=F} 
+dat.test.chrismas<-dat.test %>% filter(Day=="2018-12-24"|Day=="2018-12-25")
+
+dat.test.chrismas.t1<-dat.test.chrismas%>% 
+  group_by(Shared.Trip.Authorized) %>%
+  summarize(Fare= mean(Fare),
+            Tip=mean(Tip),
+            Additional=mean(Additional.Charges)) 
+
+kable(dat.test.chrismas.t1, booktabs=T, digits=2, 
+      caption="Trip cost of ride to downtown community areas on Chrismas") 
+```
+
+From the table, we see people would like to pay much more on Chrismas when the shared trip is not authorized. One reason is that it's often hard to call for a taxi on holidays.  It's suggested that we could charge about 4 dollars when the trip is not shared, and charge 2.5 to 3.0 dollars when the trip is shared. 
+
+#### Conclusion 
+
+Based on the analysis, a reasonable amount to charge is about 1.5 to 2.0 dollars. If passengers don't agree to share trips with others, the fee could be about 3.0 dollars. To increase the revenue, we could not only charge fees on rides going downtown, but also rides leaving downtown. Again, we could charge approximately 1.5 to 2.0 dollars. It's found that there's a difference within the downtown region. If the ride is going to community 32 and community 33, we could charge more to be 3.0 dollars. Finanly, people would like to pay more during holidays. During Chrismas or other holidays, we could charge 3.0 dollars for shared trips and 4.0 dollars on non-shared trips. 
+
+## References
+
+City of Chicago. 2019. “Community Areas with Numbers in Chicago,” May. https://www.chicago.gov/ content/dam/city/depts/doit/general/GIS/Chicago_Maps/Citywide_Maps/Community_Areas_W_ Numbers.pdf.
+
